@@ -1,19 +1,22 @@
 import sqlite3
 import os
 
-PROJECT_ROOT: str = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(PROJECT_ROOT, "edr.db")
-SCHEMA_PATH: str = os.path.join(PROJECT_ROOT, "schema.sql")
+DB_DIR: str = os.path.dirname(os.path.abspath(__file__))
+DB_PATH: str = os.path.join(DB_DIR, "edr.db")
+SCHEMA_PATH: str = os.path.join(DB_DIR, "schema.sql")
 
 def init_db():
     with open(SCHEMA_PATH) as file:
         schema = file.read()
 
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(schema)
 
 def db_connect() -> sqlite3.Connection:
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn 
 
 def schema_is_valid() -> bool:
     if not os.path.exists(DB_PATH):
@@ -21,8 +24,8 @@ def schema_is_valid() -> bool:
 
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
-        cur.execute("select count(*) from sqlite_master where type = 'table' and name in ('process_create', 'state')")
-        return cur.fetchone()[0] == 2
+        cur.execute("select count(*) from sqlite_master where type = 'table' and name in ('process_create', 'state', 'alerts')")
+        return cur.fetchone()[0] == 3
 
 def ensure_schema() -> bool:
     print("[Database] Checking database schema...")

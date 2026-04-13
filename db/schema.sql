@@ -5,6 +5,7 @@ create table if not exists process_create(
     process_id integer,
     parent_process_id integer,
     image text,
+    original_file_name text,
     command_line text,
     process_user text,
     logon_id text,
@@ -19,3 +20,15 @@ create table if not exists state(
     key text primary key,
     value text not null
 );
+
+create table if not exists alerts(
+    id integer primary key autoincrement,
+    rule_name text not null,
+    mitre text not null,
+    message text not null,
+    severity text not null,
+    timestamp text not null,
+    channel text,
+    record_id integer,
+    foreign key(channel, record_id) references process_create(channel, record_id) 
+)

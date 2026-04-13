@@ -8,8 +8,8 @@ import sqlite3
 from db.db import db_connect
 
 SYSMON_LOG: str = "Microsoft-Windows-Sysmon/Operational"
-PROJECT_ROOT: str = os.path.dirname(os.path.abspath(__file__)) 
-SPOOL_DIR: str = os.path.join(PROJECT_ROOT, "spool")
+COLLECTOR_DIR: str = os.path.dirname(os.path.abspath(__file__)) 
+SPOOL_DIR: str = os.path.join(COLLECTOR_DIR, "spool")
 
 #Data that was collected by the collector go here to be later 
 #taken by the parser
@@ -77,8 +77,9 @@ def generate_jsonl_filename() -> str:
     filename = f"eid_{EVENT_ID}_{get_timestamp_for_filename()}.jsonl"
     return filename
 
-#Parser may read jsonl files before collector is done writing them
-#Appending '.tmp' to the filename ensures that they never get seen until it's done being written
+# Parser may read jsonl files before collector is done writing them
+# Appending '.tmp' to the filename ensures that they never get seen until it's done being written
+# In the parsing phase, files not ending with '.jsonl' get ignored
 def atomic_write_jsonl(inbox_file_path: str, event_records: list[SpoolRecord]):
     tmp_filename: str = inbox_file_path + ".tmp"
 
@@ -112,9 +113,7 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
     while len(records) < max_events:
         event = win32evtlog.EvtNext(handle_query, 1)
         if not event:
-            print("[Collector] No events found")
-            break   
-
+            break 
         evt = event[0]
         xml = win32evtlog.EvtRender(evt, win32evtlog.EvtRenderEventXml)
         rec = xml_to_spool_record(xml)
@@ -125,11 +124,14 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
     return records, max_event_record_id, last_stored_event_record_id
 
 def run_collector():
+    print("[Collector] Starting up")
     print("[Collector] Ensuring directories exist...")
     ensure_dirs()
 
+    conn: sqlite3.Connection | None = None
+
     try:
-        conn: sqlite3.Connection = db_connect()
+        conn = db_connect()
         print("[Collector] Connection to database established")
     except Exception as e:
         print(f"[Collector] [Error] Unable to connect to database")
@@ -138,10 +140,9 @@ def run_collector():
     print("[Collector] Getting events...")
 
     try:
-        records, max_event_record_id, last_stored_event_record_id  = collect_new_sysmon_events(EVENT_ID, conn)
-
+        records, max_event_record_id, last_stored_event_record_id = collect_new_sysmon_events(EVENT_ID, conn)
         if not records:
-            print(f"[Collector] No records retrieved. last_record_id = {last_stored_event_record_id}")
+            print(f"[Collector] No events found since last_record_id = {last_stored_event_record_id}")
             return
 
         print(f"[Collector] Retrieved {len(records)} events!")
@@ -162,4 +163,5 @@ def run_collector():
         print(f"[Collector] [Error] {e}")
         print("[Collector] [Error] If this error is 'Access Denied', run as administrator")
     finally:
-        conn.close()
+        if conn:
+            conn.close()

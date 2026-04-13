@@ -31,6 +31,7 @@ class EventRecord:
     process_id: Optional[int]
     parent_process_id: Optional[int]
     image: Optional[str]
+    original_file_name: Optional[str]
     command_line: Optional[str]
     process_user: Optional[str]
     logon_id: Optional[str]
@@ -64,13 +65,13 @@ def insert_process(conn: sqlite3.Connection, event_records: list[EventRecord]) -
     for event in event_records:
         conn.execute("""insert or ignore into process_create(
                     channel, record_id, timestamp, process_id,
-                    parent_process_id, image, command_line, process_user,
-                    logon_id, integrity_level, hashes, parent_image,
+                    parent_process_id, image, original_file_name, command_line,
+                    process_user, logon_id, integrity_level, hashes, parent_image,
                     parent_command_line)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (event.channel, event.event_record_id, event.time_retrieved,
-                    event.process_id, event.parent_process_id,
-                    event.image, event.command_line, event.process_user, event.logon_id,
+                    event.process_id, event.parent_process_id, event.image,
+                    event.original_file_name, event.command_line, event.process_user, event.logon_id,
                     event.integrity_level, event.hashes, event.parent_image,
                     event.parent_command_line))
     conn.commit()
@@ -114,19 +115,25 @@ def xml_to_event_record(records: list[SpoolRecord]) -> list[EventRecord]:
             root = et.fromstring(record.xml)        
 
             #pre parsed fields
-            event_record_id: int = record.event_record_id or 0
+            if record.event_record_id is None:
+                #TODO log files that did not have event_record_id instead of skipping
+                print(f"[Parser] [Error] Skipping record with missing event_record_id")
+                continue
+
+            event_record_id: int = record.event_record_id
             channel: str = record.channel
   
             time_created = root.find('e:System/e:TimeCreated', namespaces = NAMESPACE)
             timestamp = time_created.get('SystemTime') if time_created is not None else None
 
-            names: list[str] = ['ProcessId', 'ParentProcessId', 'Image', 'CommandLine', 'User', 'LogonId', 'IntegrityLevel', 'Hashes', 'ParentImage', 'ParentCommandLine']
+            names: list[str] = ['ProcessId', 'ParentProcessId', 'Image','OriginalFileName', 'CommandLine', 'User', 'LogonId', 'IntegrityLevel', 'Hashes', 'ParentImage', 'ParentCommandLine']
             ed: dict[str, Optional[str]] = get_event_data(root, names)
 
             parent_process_id = int(ed['ParentProcessId']) if ed['ParentProcessId'] else None
             process_id = int(ed['ProcessId']) if ed['ProcessId'] else None
             image = ed['Image']
             command_line = ed['CommandLine']
+            original_file_name = ed['OriginalFileName']
             process_user = ed['User']
             logon_id = ed['LogonId']
             integrity_level = ed['IntegrityLevel'] if ed['IntegrityLevel'] else None
@@ -142,11 +149,14 @@ def xml_to_event_record(records: list[SpoolRecord]) -> list[EventRecord]:
                              process_id = process_id,
                              parent_process_id = parent_process_id,
                              image = image,
+                             original_file_name = original_file_name,
                              command_line = command_line,
                              process_user = process_user,
                              logon_id = logon_id,
                              integrity_level = integrity_level,
-                             hashes = hashes, parent_image = parent_image, parent_command_line = parent_command_line)
+                             hashes = hashes,
+                             parent_image = parent_image,
+                             parent_command_line = parent_command_line)
 
             event_records.append(event_record)
         except Exception as e:
@@ -157,54 +167,77 @@ def xml_to_event_record(records: list[SpoolRecord]) -> list[EventRecord]:
 
 def move_inbox_files_to_processing(inbox_files: list[str], src_dir: str, dst_dir: str):
     for file in inbox_files:
-        processing_path: str = move_file(src_dir, dst_dir, file)
-        print(f"[Parser] Processing {processing_path}")
+        try:
+            processing_path: str = move_file(src_dir, dst_dir, file)
+            print(f"[Parser] Processing {processing_path}")
+        except Exception as e:
+            print(f"[Parser] [Error] Could not move {file} to processing, will retry next run: {e}")
 
-def run_parser():
-    try:
-        conn: sqlite3.Connection = db_connect()
-        print("[Parser] Connection to database established")
-    except sqlite3.Error as e:
-        print(f"[Parser] Failed to connect to database: {e}")
-        return
-
-    print("[Parser] Ensuring dirs")
-    ensure_dirs()
-
-    inbox_files: list[str] = list_inbox_jsonl()
-    print(f"[Parser] Moving {len(inbox_files)} files from inbox directory to processing directory")
-    move_inbox_files_to_processing(inbox_files, INBOX_DIR, PROCESSING_DIR)
-
-    processing_files: list[str] = [f for f in os.listdir(PROCESSING_DIR) if f.endswith(".jsonl")]
+def parse_processing_files(conn: sqlite3.Connection, processing_files: list[str]) -> list[EventRecord]:
     event_records: list[EventRecord] = []
-    successfully_parsed: list[str] = []
 
     print(f"[Parser] Parsing files...")
 
     for file in processing_files:
         filepath: str = os.path.join(PROCESSING_DIR, file)
-
         try:
-            records: list[SpoolRecord] = get_records_from_spool(filepath)
-            event_records.extend(xml_to_event_record(records))
-            successfully_parsed.append(file)
+            spool_records: list[SpoolRecord] = get_records_from_spool(filepath)
+            records: list[EventRecord] = xml_to_event_record(spool_records)
+
+            if not records:
+                #TODO fixing issue in xml_to_event_record will make this check simpler
+                print(f"[Parser] [Error] No valid events parsed from {file}, records may have had missing event_record_id")
+                try:
+                    bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
+                    print(f"[Parser] [Error] Moved {file} to {bad_path}")
+                except Exception as e:
+                    print(f"[Parser] [Error] Also failed to move {file} to bad path: {e}")
+                continue
 
         except Exception as e:
             print(f"[Parser] [Error] Failed to parse: {file}: {e}")
+            bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
+            print(f"[Parser] [Error] Moved {file} to {bad_path}")
+            continue
 
-            try:
-                bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
-                print(f"[Parser] [Error] {e}. Moved to {bad_path}")
-            except Exception:
-                print(f"[Parser] [Error] Also failed to move file to bad path: {e}")
+        try:
+            insert_process(conn, records)
+            move_file(PROCESSING_DIR, DONE_DIR, file)
+            event_records.extend(records)
+        except Exception as e:
+            print(f"[Parser] [Error] Failed to insert {file} into database: {e}")
+
+    return event_records 
+
+def run_parser() -> list[EventRecord] | None:
+    print("[Parser] Starting up")
+
+    conn: sqlite3.Connection | None = None
 
     try:
-        insert_process(conn, event_records)
-        print(f"[Parser] Successfully inserted {len(event_records)} records into database")
-        for file in successfully_parsed:
-            move_file(PROCESSING_DIR, DONE_DIR, file)
+        conn = db_connect()
+        print("[Parser] Connection to database established")
+    except sqlite3.Error as e:
+        print(f"[Parser] Failed to connect to database: {e}")
+        return None
 
+    try:
+        print("[Parser] Ensuring dirs")
+        ensure_dirs()
+
+        inbox_files: list[str] = list_inbox_jsonl()
+        print(f"[Parser] Moving {len(inbox_files)} files from inbox directory to processing directory")
+        move_inbox_files_to_processing(inbox_files, INBOX_DIR, PROCESSING_DIR)
+
+        processing_files: list[str] = sorted(f for f in os.listdir(PROCESSING_DIR) if f.endswith(".jsonl"))
+
+        event_records = parse_processing_files(conn, processing_files)
+
+        return event_records
     except Exception as e:
-        print(f"[Parser] [Error] Failed to insert into process_create table: {e}")
+        print(f"[Parser] [Error] Unexpected error: {e}")
+        return None
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
