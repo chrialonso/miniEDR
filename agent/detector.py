@@ -158,7 +158,7 @@ def run_rules(record: "EventRecord") -> list[Alert]:
 
     return alerts
 
-def run_detection(records: list[EventRecord]) -> list[Alert]:
+def run_detection(records: list["EventRecord"]) -> list[Alert]:
     alerts: list[Alert] = []
 
     #run detection rules here while event records are still in memory
@@ -177,7 +177,7 @@ def insert_alerts(conn: sqlite3.Connection, alerts: list[Alert]) -> None:
                       alert.event_record.channel, alert.event_record.event_record_id))
     conn.commit()
  
-def run_detector(records: list[EventRecord]) -> None:
+def run_detector(records: list["EventRecord"]) -> None:
     print("[Detector] Starting up")
 
     conn: sqlite3.Connection | None = None
