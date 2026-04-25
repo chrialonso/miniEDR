@@ -16,6 +16,22 @@ create table if not exists process_create(
     primary key (channel, record_id)
 );
 
+create table if not exists network_connect(
+    channel text not null,
+    record_id integer not null,
+    timestamp text,
+    process_id integer,
+    image text,
+    process_user text,
+    protocol text,
+    source_ip text,
+    source_port text,
+    destination_ip text,
+    destination_hostname text,
+    destination_port text,
+    primary key (channel, record_id)
+);
+
 create table if not exists state(
     key text primary key,
     value text not null
@@ -29,6 +45,5 @@ create table if not exists alerts(
     severity text not null,
     timestamp text not null,
     channel text,
-    record_id integer,
-    foreign key(channel, record_id) references process_create(channel, record_id) 
-)
+    record_id integer
+);

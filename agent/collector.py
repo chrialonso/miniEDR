@@ -15,8 +15,8 @@ SPOOL_DIR: str = os.path.join(COLLECTOR_DIR, "spool")
 #taken by the parser
 INBOX_DIR: str = os.path.join(SPOOL_DIR, "inbox")
 
-#Sysmon event ID 1 for process creation events
-EVENT_ID: int = 1
+#Sysmon event ID 1 and 3 for process creation and network connection events
+EVENT_IDS: list[int] = [1,3]
 
 #Tracks the highest EventRecordID that has been collected
 #so that the collector run won't get old events
@@ -57,11 +57,11 @@ def extract_event_record_id(xml: str) -> Optional[int]:
     except ValueError:
         return None
 
-def xml_to_spool_record(event: str) -> SpoolRecord:
+def xml_to_spool_record(event: str, event_id: int) -> SpoolRecord:
     time_retrieved = get_datetime_iso()
     event_record_id = extract_event_record_id(event)
 
-    return SpoolRecord(event_id = EVENT_ID,
+    return SpoolRecord(event_id = event_id,
                        event_record_id = event_record_id,
                        time_retrieved = time_retrieved,
                        xml = event)
@@ -73,8 +73,8 @@ def get_timestamp_for_filename() -> str:
     filename_timestamp: str = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H-%M-%S')
     return filename_timestamp
 
-def generate_jsonl_filename() -> str:
-    filename = f"eid_{EVENT_ID}_{get_timestamp_for_filename()}.jsonl"
+def generate_jsonl_filename(event_id) -> str:
+    filename = f"eid_{event_id}_{get_timestamp_for_filename()}.jsonl"
     return filename
 
 # Parser may read jsonl files before collector is done writing them
@@ -102,7 +102,7 @@ def state_get(key: str, default: str, conn: sqlite3.Connection) -> str:
         return default
 
 def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 10) -> tuple[list[SpoolRecord], int, int]:
-    last_stored_event_record_id = int(state_get(EVENT_RECORD_ID_STATE, "0", conn))
+    last_stored_event_record_id = int(state_get(EVENT_RECORD_ID_STATE+f"_{event_id}", "0", conn))
     query: str = build_query(event_id, last_stored_event_record_id)
     handle_query = win32evtlog.EvtQuery(SYSMON_LOG, win32evtlog.EvtQueryForwardDirection, query)
 
@@ -116,7 +116,7 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
             break 
         evt = event[0]
         xml = win32evtlog.EvtRender(evt, win32evtlog.EvtRenderEventXml)
-        rec = xml_to_spool_record(xml)
+        rec = xml_to_spool_record(xml, event_id)
         if rec.event_record_id is not None:
             max_event_record_id = max(max_event_record_id, rec.event_record_id)
         records.append(rec)
@@ -134,30 +134,33 @@ def run_collector():
         conn = db_connect()
         print("[Collector] Connection to database established")
     except Exception as e:
-        print(f"[Collector] [Error] Unable to connect to database")
+        print("[Collector] [Error] Unable to connect to database")
         return
 
     print("[Collector] Getting events...")
 
     try:
-        records, max_event_record_id, last_stored_event_record_id = collect_new_sysmon_events(EVENT_ID, conn)
-        if not records:
-            print(f"[Collector] No events found since last_record_id = {last_stored_event_record_id}")
-            return
+        for event_id in EVENT_IDS:
+            records, max_event_record_id, last_stored_event_record_id = collect_new_sysmon_events(event_id, conn)
+            if not records:
+                print(f"[Collector] No events found for event ID {event_id} since last_record_id = {last_stored_event_record_id}")
+                continue 
 
-        print(f"[Collector] Retrieved {len(records)} events!")
-        print("[Collector] Generating filename...")
-        filename: str = generate_jsonl_filename()
+            print(f"[Collector] Retrieved {len(records)} events!")
+            print("[Collector] Generating filename...")
+            filename: str = generate_jsonl_filename(event_id)
 
-        inbox_file_path: str = os.path.join(INBOX_DIR, filename)
-        atomic_write_jsonl(inbox_file_path, records)
+            inbox_file_path: str = os.path.join(INBOX_DIR, filename)
 
-        print(f"[Collector] Wrote to {inbox_file_path}")
+            if max_event_record_id > last_stored_event_record_id:
+                try:
+                    print(f"[Collector] Wrote to {inbox_file_path}")
+                    atomic_write_jsonl(inbox_file_path, records)
+                    state_set(EVENT_RECORD_ID_STATE+f"_{event_id}", str(max_event_record_id), conn)
+                except Exception as e:
+                    print(f"[Collector] [Error] {e}")
 
-        if max_event_record_id > last_stored_event_record_id:
-            state_set(EVENT_RECORD_ID_STATE, str(max_event_record_id), conn)
-
-        print(f"[Collector] Checkpoint: {last_stored_event_record_id} -> {max_event_record_id}")
+            print(f"[Collector] Checkpoint: {last_stored_event_record_id} -> {max_event_record_id}")
 
     except Exception as e:
         print(f"[Collector] [Error] {e}")

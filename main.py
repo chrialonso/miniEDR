@@ -1,6 +1,6 @@
 from db.db import ensure_schema
 from agent.collector import run_collector
-from agent.parser import run_parser, EventRecord
+from agent.parser import run_parser, ProcessCreate, NetworkConnect
 from agent.detector import run_detector
 
 def main():
@@ -9,7 +9,7 @@ def main():
         return
 
     run_collector()
-    records: list[EventRecord] | None = run_parser()
+    records: tuple[list[ProcessCreate], list[NetworkConnect]] | None = run_parser()
 
     if records is None:
         print("[Main] [Error] Parser failed, skipping detection")

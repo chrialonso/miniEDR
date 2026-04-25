@@ -24,8 +24,8 @@ def schema_is_valid() -> bool:
 
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
-        cur.execute("select count(*) from sqlite_master where type = 'table' and name in ('process_create', 'state', 'alerts')")
-        return cur.fetchone()[0] == 3
+        cur.execute("select count(*) from sqlite_master where type = 'table' and name in ('process_create', 'network_connect', 'state', 'alerts')")
+        return cur.fetchone()[0] == 4
 
 def ensure_schema() -> bool:
     print("[Database] Checking database schema...")
