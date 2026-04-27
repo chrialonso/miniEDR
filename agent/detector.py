@@ -40,6 +40,8 @@ class PowershellRules(Enum):
 class NetworkRules(Enum):
     NOTEPAD_CONNECTION = "network_notepad_connection"
     CRYPTO_MINING = "network_crypto_connection"
+    NGROK_DOMAIN_CONNECTION = "network_ngrok_domain_connection"
+    NGROK_TUNNEL_COMM = "network_ngrok_tunnel_communication"
 
 # --- Sysmon EventID 1 Detection Rules ---
 
@@ -214,6 +216,44 @@ def make_crypto_mining_rule(crypto_pools: set[str]):
 
     return network_crypto_mining
 
+def network_domain_ngrok(record: "NetworkConnect") -> Optional[Alert]:
+    if not record.destination_hostname:
+        return None
+
+    if record.initiated == "false":
+        return None
+
+    dest_hostname = record.destination_hostname.lower()
+    ngrok_domains: set[str] = {".ngrok-free.app", ".ngrok-free.dev", ".ngrok.app", ".ngrok.dev", ".ngrok.io"}
+
+    for domain in ngrok_domains:
+        if dest_hostname.endswith(domain):
+            return Alert(rule_name = NetworkRules.NGROK_DOMAIN_CONNECTION.value,
+                 severity = Severity.HIGH,
+                 mitre = "T1567, T1572, T1102",
+                 message = "Executable initiated a network connection to 'ngrok' domains",
+                 event_record = record)
+    return None
+
+def network_ngrok_tunnel(record: "NetworkConnect") -> Optional[Alert]:
+    if not record.destination_hostname:
+        return None
+
+    dest_hostname = record.destination_hostname.lower()
+
+    ngrok_tunnels: set[str] = {"tunnel.us.ngrok.com", "tunnel.eu.ngrok.com", "tunnel.ap.ngrok.com", "tunnel.au.ngrok.com",
+                               "tunnel.sa.ngrok.com", "tunnel.jp.ngrok.com", "tunnel.in.ngrok.com"}
+
+    for tunnel in ngrok_tunnels:
+        if tunnel in dest_hostname:
+            return Alert(rule_name = NetworkRules.NGROK_TUNNEL_COMM.value,
+                         severity = Severity.HIGH,
+                         mitre = "T1567, T1568.002, T1572, T1090, T1102, S0508",
+                         message = "Executable initiated a network connection to 'ngrok' tunneling domains",
+                         event_record = record)
+
+    return None
+    
 # --- End of Rules ---
 
 PROCESS_RULES = [powershell_encoding, powershell_defender_exclusion, powershell_disable_defender_av]
@@ -227,7 +267,7 @@ def run_process_rules(record: "ProcessCreate") -> list[Alert]:
 
     return alerts
 
-NETWORK_RULES = [network_notepad_connection]
+NETWORK_RULES = [network_notepad_connection, network_domain_ngrok, network_ngrok_tunnel]
 def run_network_rules(record: "NetworkConnect", network_rules: list[Callable[["NetworkConnect"], Optional[Alert]]]) -> list[Alert]:
     alerts: list[Alert] = []
     for rule in network_rules:
@@ -244,13 +284,13 @@ def run_detection(records: tuple[list["ProcessCreate"], list['NetworkConnect']],
 
     #run detection rules here while event records are still in memory
     for p_records in process_records:
-        alert = run_process_rules(p_records)
-        alerts.extend(alert)
-    
+        p_alert = run_process_rules(p_records)
+        alerts.extend(p_alert)
+
     for n_records in network_records:
-        alert = run_network_rules(n_records, network_rules)
-        alerts.extend(alert)
-        
+        n_alert = run_network_rules(n_records, network_rules)
+        alerts.extend(n_alert)
+
     return alerts
 
 def insert_alerts(conn: sqlite3.Connection, alerts: list[Alert]) -> None:

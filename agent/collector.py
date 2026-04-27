@@ -6,6 +6,7 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 import sqlite3
 from db.db import db_connect
+import win32api
 
 SYSMON_LOG: str = "Microsoft-Windows-Sysmon/Operational"
 COLLECTOR_DIR: str = os.path.dirname(os.path.abspath(__file__)) 
@@ -101,7 +102,7 @@ def state_get(key: str, default: str, conn: sqlite3.Connection) -> str:
     else:
         return default
 
-def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 10) -> tuple[list[SpoolRecord], int, int]:
+def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 100) -> tuple[list[SpoolRecord], int, int]:
     last_stored_event_record_id = int(state_get(EVENT_RECORD_ID_STATE+f"_{event_id}", "0", conn))
     query: str = build_query(event_id, last_stored_event_record_id)
     handle_query = win32evtlog.EvtQuery(SYSMON_LOG, win32evtlog.EvtQueryForwardDirection, query)
@@ -110,16 +111,20 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
 
     max_event_record_id: int = last_stored_event_record_id
 
-    while len(records) < max_events:
-        event = win32evtlog.EvtNext(handle_query, 1)
-        if not event:
-            break 
-        evt = event[0]
-        xml = win32evtlog.EvtRender(evt, win32evtlog.EvtRenderEventXml)
-        rec = xml_to_spool_record(xml, event_id)
-        if rec.event_record_id is not None:
-            max_event_record_id = max(max_event_record_id, rec.event_record_id)
-        records.append(rec)
+    try:
+        while len(records) < max_events:
+            event = win32evtlog.EvtNext(handle_query, 1)
+            if not event:
+                break 
+            evt = event[0]
+            xml = win32evtlog.EvtRender(evt, win32evtlog.EvtRenderEventXml)
+            rec = xml_to_spool_record(xml, event_id)
+            if rec.event_record_id is not None:
+                max_event_record_id = max(max_event_record_id, rec.event_record_id)
+            records.append(rec)
+    finally:
+        print("[Collector] Closing query handle")
+        handle_query.Close() #type: ignore
 
     return records, max_event_record_id, last_stored_event_record_id
 

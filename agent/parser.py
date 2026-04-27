@@ -49,6 +49,7 @@ class NetworkConnect:
     image: Optional[str]
     process_user: Optional[str]
     protocol: Optional[str]
+    initiated: Optional[str]
     source_ip: Optional[str]
     source_port: Optional[str]
     destination_ip: Optional[str]
@@ -95,12 +96,12 @@ def insert_network(conn: sqlite3.Connection, network_records: list[NetworkConnec
     for record in network_records:
         conn.execute("""insert or ignore into network_connect(
                      channel, record_id, timestamp, process_id, image, process_user,
-                     protocol, source_ip, source_port, destination_ip, destination_hostname,
+                     protocol, initiated, source_ip, source_port, destination_ip, destination_hostname,
                      destination_port)
-                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (record.channel, record.event_record_id, record.time_retrieved, record.process_id,
-                     record.image, record.process_user, record.protocol, record.source_ip, record.source_port,
-                     record.destination_ip, record.destination_hostname, record.destination_port))
+                      record.image, record.process_user, record.protocol, record.initiated, record.source_ip,
+                      record.source_port, record.destination_ip, record.destination_hostname, record.destination_port))
 
     conn.commit()
 
@@ -228,7 +229,7 @@ def parse_network_connect(record: SpoolRecord) -> NetworkConnect | None:
     time_created = root.find('e:System/e:TimeCreated', namespaces = NAMESPACE)
     timestamp = time_created.get('SystemTime') if time_created is not None else None
 
-    names: list[str] = ['ProcessId', 'Image', 'User', 'Protocol', 'SourceIp',
+    names: list[str] = ['ProcessId', 'Image', 'User', 'Protocol', 'Initiated', 'SourceIp',
                         'SourcePort', 'DestinationIp', 'DestinationHostname', 'DestinationPort']
 
     ed: dict[str, Optional[str]] = get_event_data(root, names)
@@ -236,6 +237,7 @@ def parse_network_connect(record: SpoolRecord) -> NetworkConnect | None:
     image = ed['Image']
     process_user = ed['User']
     protocol = ed['Protocol']
+    initiated = ed['Initiated']
     source_ip = ed['SourceIp']
     source_port = ed['SourcePort']
     destination_ip = ed['DestinationIp']
@@ -249,6 +251,7 @@ def parse_network_connect(record: SpoolRecord) -> NetworkConnect | None:
                                     image = image,
                                     process_user = process_user,
                                     protocol = protocol,
+                                    initiated = initiated,
                                     source_ip = source_ip,
                                     source_port = source_port,
                                     destination_ip = destination_ip,

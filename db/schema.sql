@@ -24,6 +24,7 @@ create table if not exists network_connect(
     image text,
     process_user text,
     protocol text,
+    initiated text,
     source_ip text,
     source_port text,
     destination_ip text,
