@@ -6,21 +6,20 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 import sqlite3
 from db.db import db_connect
-import win32api
 
 SYSMON_LOG: str = "Microsoft-Windows-Sysmon/Operational"
 COLLECTOR_DIR: str = os.path.dirname(os.path.abspath(__file__)) 
 SPOOL_DIR: str = os.path.join(COLLECTOR_DIR, "spool")
 
-#Data that was collected by the collector go here to be later 
-#taken by the parser
+# Data that was collected by the collector go here to be later 
+# taken by the parser
 INBOX_DIR: str = os.path.join(SPOOL_DIR, "inbox")
 
-#Sysmon event ID 1 and 3 for process creation and network connection events
+# Sysmon event ID 1 = ProcessCreate, event ID 3 = NetworkConnect
 EVENT_IDS: list[int] = [1,3]
 
-#Tracks the highest EventRecordID that has been collected
-#so that the collector run won't get old events
+# Tracks the highest EventRecordID that has been collected
+# so that the collector run won't get old events
 EVENT_RECORD_ID_STATE: str = "stored_event_record_id"
 
 @dataclass
@@ -38,6 +37,7 @@ def ensure_dirs() -> None:
     os.makedirs(INBOX_DIR, exist_ok = True)
 
 def build_query(event_id: int, last_record_id: int) -> str:
+    # Xpath query filters to only events newer than the last seen records
     return f"*[System[(EventID={event_id}) and (EventRecordID > {last_record_id})]]"
 
 def extract_event_record_id(xml: str) -> Optional[int]:
@@ -102,7 +102,7 @@ def state_get(key: str, default: str, conn: sqlite3.Connection) -> str:
     else:
         return default
 
-def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 100) -> tuple[list[SpoolRecord], int, int]:
+def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 1000) -> tuple[list[SpoolRecord], int, int]:
     last_stored_event_record_id = int(state_get(EVENT_RECORD_ID_STATE+f"_{event_id}", "0", conn))
     query: str = build_query(event_id, last_stored_event_record_id)
     handle_query = win32evtlog.EvtQuery(SYSMON_LOG, win32evtlog.EvtQueryForwardDirection, query)
@@ -123,6 +123,8 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
                 max_event_record_id = max(max_event_record_id, rec.event_record_id)
             records.append(rec)
     finally:
+        # Always close the query handle even if an exception occurs mid loop to avoid leaking windows event log handles
+        # ignoring because pyright cannot see PyEVT_HANDLE's methods
         print("[Collector] Closing query handle")
         handle_query.Close() #type: ignore
 

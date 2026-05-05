@@ -4,9 +4,14 @@ from db.db import db_connect
 from enum import Enum
 import sqlite3
 import os
+import logging
+from db.logger import log_alert
 
 CRYPTO_POOLS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crypto_pools.txt")
 
+# TYPE_CHECKING guard avoids a circular import at runtime while still allowing
+# the type checker to resolve ProcessCreate and NetworkConnect from parser.py
+# as well as log_alert from logger
 if TYPE_CHECKING:
     from agent.parser import ProcessCreate, NetworkConnect
 
@@ -267,7 +272,7 @@ def run_process_rules(record: "ProcessCreate") -> list[Alert]:
 
     return alerts
 
-NETWORK_RULES = [network_notepad_connection, network_domain_ngrok, network_ngrok_tunnel]
+BASE_NETWORK_RULES = [network_notepad_connection, network_domain_ngrok, network_ngrok_tunnel]
 def run_network_rules(record: "NetworkConnect", network_rules: list[Callable[["NetworkConnect"], Optional[Alert]]]) -> list[Alert]:
     alerts: list[Alert] = []
     for rule in network_rules:
@@ -293,19 +298,25 @@ def run_detection(records: tuple[list["ProcessCreate"], list['NetworkConnect']],
 
     return alerts
 
-def insert_alerts(conn: sqlite3.Connection, alerts: list[Alert]) -> None:
+def insert_alerts(conn: sqlite3.Connection, alerts: list[Alert], logger) -> None:
     for alert in alerts:
         conn.execute("""insert into alerts(rule_name, mitre, message, severity,
                      timestamp, channel, record_id)
                      values(?, ?, ?, ?, ?, ?, ?)""",
                      (alert.rule_name, alert.mitre, alert.message, str(alert.severity), alert.timestamp,
                       alert.event_record.channel, alert.event_record.event_record_id))
+
+        log_alert(alert, logger)
+
     conn.commit()
  
-def run_detector(records: tuple[list["ProcessCreate"], list["NetworkConnect"]]) -> None:
+def run_detector(records: tuple[list["ProcessCreate"], list["NetworkConnect"]], logger: logging.Logger) -> None:
     print("[Detector] Starting up")
+
+    # Load the crypto pool blocklist once per detector run, bake it into
+    # the mining rule via closure rather than reading the file per record
     crypto_pools: set[str] = load_crypto_pools(CRYPTO_POOLS_FILE)
-    network_rules = NETWORK_RULES + [make_crypto_mining_rule(crypto_pools)]
+    network_rules = BASE_NETWORK_RULES + [make_crypto_mining_rule(crypto_pools)]
 
     conn: sqlite3.Connection | None = None
 
@@ -324,7 +335,7 @@ def run_detector(records: tuple[list["ProcessCreate"], list["NetworkConnect"]]) 
         if not alerts:
             print(f"[Detector] No alerts in {total} records")
 
-        insert_alerts(conn, alerts)
+        insert_alerts(conn, alerts, logger)
     except Exception as e:
         print(f"[Detector] [Error] Failed during detection or alert insertion: {e}")
     finally:

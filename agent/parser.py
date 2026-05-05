@@ -129,6 +129,8 @@ def get_records_from_spool(path: str) -> list[SpoolRecord]:
     return records
 
 def get_event_data(root, names: list[str]) -> dict[str, Optional[str]]:
+    # Pre-populate all keys with None so that callers always get a dict with every
+    # requested field even if it was not in the XML
     result: dict[str, Optional[str]] = {name: None for name in names}
     for data in root.findall('e:EventData/e:Data', NAMESPACE):
         name = data.get('Name')
