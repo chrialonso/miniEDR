@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional, TYPE_CHECKING, Callable
 from db.db import db_connect
 from enum import Enum
@@ -6,6 +6,7 @@ import sqlite3
 import os
 import logging
 from db.logger import log_alert
+import json
 
 CRYPTO_POOLS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crypto_pools.txt")
 
@@ -36,6 +37,9 @@ class Alert:
     message: str
     event_record: 'ProcessCreate | NetworkConnect'
     timestamp: str = field(default_factory=get_datetime_iso)
+    
+    def to_json(self):
+        return json.dumps(asdict(self), ensure_ascii = False)
 
 class PowershellRules(Enum):
     ENCODED_COMMAND = "powershell_encoded_command"
@@ -222,6 +226,9 @@ def make_crypto_mining_rule(crypto_pools: set[str]):
     return network_crypto_mining
 
 def network_domain_ngrok(record: "NetworkConnect") -> Optional[Alert]:
+    # ATT&CK: T1567, T1572, T1102
+    # Sigma: Process Initiated Network Connection To Ngrok Domain
+
     if not record.destination_hostname:
         return None
 
@@ -241,6 +248,9 @@ def network_domain_ngrok(record: "NetworkConnect") -> Optional[Alert]:
     return None
 
 def network_ngrok_tunnel(record: "NetworkConnect") -> Optional[Alert]:
+    #ATT&CK: T1567, T1568.002, T1572, T1090, T1102, S0508
+    #Sigma: Communication To Ngrok Tunneling Service Initiated
+
     if not record.destination_hostname:
         return None
 

@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 import os
 from typing import TYPE_CHECKING
+from dataclasses import asdict
 
 if TYPE_CHECKING:
     from agent.detector import Alert
@@ -20,9 +21,10 @@ class JsonFormatter(logging.Formatter):
         rule_name = getattr(record, "rule_name", None)
         severity = getattr(record, "severity", None)
         mitre = getattr(record, "mitre", None)
+        event = getattr(record, "event", None)
         
         d = {"level": levelname, "timestamp": timestamp, "message": message,
-             "rule_name": rule_name,"severity": severity, "mitre": mitre}
+             "rule_name": rule_name,"severity": severity, "mitre": mitre, "event": event}
 
         return json.dumps(d, ensure_ascii = False)
 
@@ -39,11 +41,18 @@ def setup_logger() -> logging.Logger:
         jsonl_handler.setFormatter(JsonFormatter()) 
         logger.addHandler(jsonl_handler)
        
-        formatter = logging.Formatter("Rule name: %(rule_name)s | Severity: %(severity)s | MITRE: %(mitre)s\nMessage: %(message)s")
+        formatter = logging.Formatter("Rule name: %(rule_name)s | Severity: %(severity)s | MITRE: %(mitre)s\n"
+                                      "Message: %(message)s\n"
+                                      "Event:\n%(event_log_string)s\n"
+                                      "----------------------------------------\n")
         log_handler.setFormatter(formatter)
         logger.addHandler(log_handler)
 
     return logger
 
 def log_alert(alert: 'Alert', logger: logging.Logger) -> None:
-    logger.warning(alert.message, extra = {"rule_name": alert.rule_name, "severity": str(alert.severity), "mitre": alert.mitre})
+    logger.warning(alert.message, extra = {"rule_name": alert.rule_name,
+                                           "severity": str(alert.severity),
+                                           "mitre": alert.mitre,
+                                           "event": asdict(alert.event_record),
+                                           "event_log_string": alert.event_record.to_log()})

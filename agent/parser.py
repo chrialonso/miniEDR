@@ -40,6 +40,15 @@ class ProcessCreate:
     parent_image: Optional[str]
     parent_command_line: Optional[str]
 
+    def to_log(self) -> str:
+        return (f"  User:                   {self.process_user}\n"
+                f"  Parent Image:           {self.parent_image}\n"
+                f"  Image:                  {self.image}\n"
+                f"  Parent Command Line:    {self.parent_command_line}\n"
+                f"  Command Line:           {self.command_line}\n"
+                f"  Integrity Level:        {self.integrity_level}\n"
+                f"  Hashes:                 {self.hashes}")
+
 @dataclass
 class NetworkConnect:
     channel: Optional[str]
@@ -55,6 +64,15 @@ class NetworkConnect:
     destination_ip: Optional[str]
     destination_hostname: Optional[str]
     destination_port: Optional[str]
+
+    def to_log(self) -> str:
+        return(f"User:                  {self.process_user}\n"
+               f"Image:                 {self.image}\n"
+               f"Source IP:             {self.source_ip}:{self.source_port}\n"
+               f"Destination IP:        {self.destination_ip}:{self.destination_port}\n"
+               f"Destination Hostname:  {self.destination_hostname}\n"
+               f"Protocol:              {self.protocol}\n"
+               f"Initiated:             {self.initiated}")
 
 def ensure_dirs():
     os.makedirs(DONE_DIR, exist_ok = True)

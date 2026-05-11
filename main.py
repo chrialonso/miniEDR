@@ -9,7 +9,7 @@ import logging
 
 from db.logger import setup_logger
 
-LOOP_INTERVAL: int = 30
+LOOP_INTERVAL: int = 15
 
 def main():
     stop_event = threading.Event()
