@@ -7,7 +7,7 @@
 
 
 ## How It Works
-The agent runs in a continuous loop (every 30 seconds) and moves events through a pipeline: 
+The agent runs in a continuous loop (every 15 seconds) and moves events through a pipeline: 
 ```
 Sysmon Event Log
       │
