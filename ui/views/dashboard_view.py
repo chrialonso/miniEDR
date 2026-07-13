@@ -261,10 +261,10 @@ class DashboardView(Static):
             total += val
 
         self.query_one("#summary_total_val", Label).update(f"{total}")
-        self.query_one("#summary_critical_val", Label).update(f"{counts.get("critical")}")
-        self.query_one("#summary_high_val", Label).update(f"{counts.get("high")}")
-        self.query_one("#summary_medium_val", Label).update(f"{counts.get("medium")}")
-        self.query_one("#summary_low_val", Label).update(f"{counts.get("low")}")
+        self.query_one("#summary_critical_val", Label).update(f"{counts.get('critical')}")
+        self.query_one("#summary_high_val", Label).update(f"{counts.get('high')}")
+        self.query_one("#summary_medium_val", Label).update(f"{counts.get('medium')}")
+        self.query_one("#summary_low_val", Label).update(f"{counts.get('low')}")
 
     def refresh_top_processes(self) -> None:
         if getattr(self, '_fetching_process', False):
