@@ -41,11 +41,11 @@ def setup_logger() -> logging.Logger:
         jsonl_handler.setFormatter(JsonFormatter()) 
         logger.addHandler(jsonl_handler)
        
-        formatter = logging.Formatter("Rule name: %(rule_name)s | Severity: %(severity)s | MITRE: %(mitre)s\n"
+        log_formatter = logging.Formatter("Rule name: %(rule_name)s | Severity: %(severity)s | MITRE: %(mitre)s\n"
                                       "Message: %(message)s\n"
                                       "Event:\n%(event_log_string)s\n"
                                       "----------------------------------------\n")
-        log_handler.setFormatter(formatter)
+        log_handler.setFormatter(log_formatter)
         logger.addHandler(log_handler)
 
     return logger

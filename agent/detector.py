@@ -1,14 +1,19 @@
-from dataclasses import asdict, dataclass, field
+from dataclasses import  dataclass, field, asdict
 from typing import Optional, TYPE_CHECKING, Callable
+from agent.parser import EventRecords, SysmonEvent
 from db.db import db_connect
 from enum import Enum
 import sqlite3
 import os
 import logging
-from db.logger import log_alert
 import json
+from db.logger import log_alert
+from ui.log_queue import post_log
 
 CRYPTO_POOLS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crypto_pools.txt")
+
+EVENT_TYPE_NAMES: dict[int, str] = {1: "process_create",
+                                    3: "network_connect",}
 
 # TYPE_CHECKING guard avoids a circular import at runtime while still allowing
 # the type checker to resolve ProcessCreate and NetworkConnect from parser.py
@@ -35,11 +40,11 @@ class Alert:
     severity: Severity
     mitre: str
     message: str
-    event_record: 'ProcessCreate | NetworkConnect'
+    event_record: SysmonEvent
     timestamp: str = field(default_factory=get_datetime_iso)
-    
-    def to_json(self):
-        return json.dumps(asdict(self), ensure_ascii = False)
+
+    def event_to_json(self) -> str:
+        return json.dumps(asdict(self.event_record), ensure_ascii = False)
 
 class PowershellRules(Enum):
     ENCODED_COMMAND = "powershell_encoded_command"
@@ -94,8 +99,7 @@ def powershell_encoding(record: "ProcessCreate") -> Optional[Alert]:
                     mitre = "T1059.001",
                     severity = Severity.MEDIUM,
                     message = "Powershell launched with an encoded command. "
-                                "Possible obfuscation or defence evasion."
-                                f" Command: {record.command_line}",
+                                "Possible obfuscation or defence evasion.",
                     event_record = record)
     return None
 
@@ -125,8 +129,7 @@ def powershell_defender_exclusion(record: "ProcessCreate") -> Optional[Alert]:
                 rule_name = PowershellRules.DEFENDER_EXCLUSION.value,
                 severity = Severity.MEDIUM,
                 mitre = "T1562.001",
-                message = "Powershell launched with requests to exclude items from antivirus scanning." 
-                          f" Command: {record.command_line}",
+                message = "Powershell launched with requests to exclude items from antivirus scanning.",
                 event_record = record)    
     return None
 
@@ -191,7 +194,7 @@ def network_notepad_connection(record: "NetworkConnect") -> Optional[Alert]:
 
 def load_crypto_pools(path: str) -> set[str]:
     if not os.path.exists(path):
-        print(f"[Detector] [Warning] Crypto pools file not found at {path}")
+        post_log(f"[Detector] [Warning] Crypto pools file not found at {path}")
         return set()
 
     pools = set ()
@@ -204,7 +207,7 @@ def load_crypto_pools(path: str) -> set[str]:
 
     return pools
 
-def make_crypto_mining_rule(crypto_pools: set[str]):
+def network_crypto_mining(crypto_pools: set[str]):
     def network_crypto_mining(record: "NetworkConnect") -> Optional[Alert]:
         # ATT&CK: T1496
         # Sigma: Network Communication With Crypto Mining Pool
@@ -277,7 +280,7 @@ def run_process_rules(record: "ProcessCreate") -> list[Alert]:
     for rule in PROCESS_RULES:
         alert = rule(record)
         if alert:
-            print("[Detector] [ALERT] Suspicious process activity detected")
+            post_log("[Detector] [ALERT] Suspicious process activity detected")
             alerts.append(alert)
 
     return alerts
@@ -288,21 +291,20 @@ def run_network_rules(record: "NetworkConnect", network_rules: list[Callable[["N
     for rule in network_rules:
         alert = rule(record)
         if alert:
-            print("[Detector] [ALERT] Suspicious network activity detected")
+            post_log("[Detector] [ALERT] Suspicious network activity detected")
             alerts.append(alert)
 
     return alerts
 
-def run_detection(records: tuple[list["ProcessCreate"], list['NetworkConnect']], network_rules: list[Callable[["NetworkConnect"], Optional[Alert]]]) -> list[Alert]:
-    process_records, network_records = records
+def run_detection(event_records: EventRecords, network_rules: list[Callable[["NetworkConnect"], Optional[Alert]]]) -> list[Alert]:
     alerts: list[Alert] = []
 
     #run detection rules here while event records are still in memory
-    for p_records in process_records:
+    for p_records in event_records.process_create:
         p_alert = run_process_rules(p_records)
         alerts.extend(p_alert)
 
-    for n_records in network_records:
+    for n_records in event_records.network_connect:
         n_alert = run_network_rules(n_records, network_rules)
         alerts.extend(n_alert)
 
@@ -310,45 +312,45 @@ def run_detection(records: tuple[list["ProcessCreate"], list['NetworkConnect']],
 
 def insert_alerts(conn: sqlite3.Connection, alerts: list[Alert], logger) -> None:
     for alert in alerts:
+        event_type: str | None = EVENT_TYPE_NAMES.get(alert.event_record.event_id)
         conn.execute("""insert into alerts(rule_name, mitre, message, severity,
-                     timestamp, channel, record_id)
-                     values(?, ?, ?, ?, ?, ?, ?)""",
+                     timestamp, channel, record_id, event_type, event_record)
+                     values(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (alert.rule_name, alert.mitre, alert.message, str(alert.severity), alert.timestamp,
-                      alert.event_record.channel, alert.event_record.event_record_id))
+                      alert.event_record.channel, alert.event_record.event_record_id, event_type, alert.event_to_json()))
 
         log_alert(alert, logger)
 
     conn.commit()
  
-def run_detector(records: tuple[list["ProcessCreate"], list["NetworkConnect"]], logger: logging.Logger) -> None:
-    print("[Detector] Starting up")
+def run_detector(event_records: EventRecords, logger: logging.Logger) -> None:
+    post_log("[Detector] Starting up")
 
     # Load the crypto pool blocklist once per detector run, bake it into
     # the mining rule via closure rather than reading the file per record
     crypto_pools: set[str] = load_crypto_pools(CRYPTO_POOLS_FILE)
-    network_rules = BASE_NETWORK_RULES + [make_crypto_mining_rule(crypto_pools)]
+    network_rules = BASE_NETWORK_RULES + [network_crypto_mining(crypto_pools)]
 
     conn: sqlite3.Connection | None = None
 
-    process_create, network_connect = records
-    total = len(process_create) + len(network_connect)
+    total = len(event_records.process_create) + len(event_records.network_connect)
 
     try:
         conn = db_connect()
-        print("[Detector] Connection to database established")
+        post_log("[Detector] Connection to database established")
     except sqlite3.Error as e:
-        print(f"[Detector] [Error] Failed to connect to database: {e}")
+        post_log(f"[Detector] [Error] Failed to connect to database: {e}")
         return
 
     try:
-        alerts: list[Alert] = run_detection(records, network_rules)
+        alerts: list[Alert] = run_detection(event_records, network_rules)
         if not alerts:
-            print(f"[Detector] No alerts in {total} records")
+            post_log(f"[Detector] No alerts in {total} records")
 
         insert_alerts(conn, alerts, logger)
     except Exception as e:
-        print(f"[Detector] [Error] Failed during detection or alert insertion: {e}")
+        post_log(f"[Detector] [Error] Failed during detection or alert insertion: {e}")
     finally:
         if conn:
             conn.close()
-            print(f"[Detector] Connection to database closed")
+            post_log(f"[Detector] Connection to database closed")

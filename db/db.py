@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from ui.log_queue import post_log
 
 DB_DIR: str = os.path.dirname(os.path.abspath(__file__))
 DB_PATH: str = os.path.join(DB_DIR, "edr.db")
@@ -11,11 +12,13 @@ def init_db():
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(schema)
 
 def db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn 
 
 def schema_is_valid() -> bool:
@@ -28,16 +31,22 @@ def schema_is_valid() -> bool:
         return cur.fetchone()[0] == 4
 
 def ensure_schema() -> bool:
-    print("[Database] Checking database schema...")
+    post_log("[Database] Checking database schema...")
     if not schema_is_valid():
-        print("[Database] Schema missing or invalid, initializing database...")
+        post_log("[Database] Schema missing or invalid, initializing database...")
         try:
             init_db()
-            print("[Database] Database initialized")
+            post_log("[Database] Database initialized")
             return True
         except Exception as e:
-            print(f"[Database] [Error] Could not initialize database: {e}")
+            post_log(f"[Database] [Error] Could not initialize database: {e}")
             return False
     else:
-        print("[Database] Found valid schema, proceeding")
+        post_log("[Database] Found valid schema, proceeding")
         return True
+
+def get_db_size(db_path: str) -> int:
+    try:
+        return os.path.getsize(db_path)
+    except (FileNotFoundError, OSError):
+        return 0

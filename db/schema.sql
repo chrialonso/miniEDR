@@ -46,5 +46,7 @@ create table if not exists alerts(
     severity text not null,
     timestamp text not null,
     channel text,
-    record_id integer
+    record_id integer,
+    event_type text,
+    event_record text
 );

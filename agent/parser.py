@@ -3,10 +3,12 @@ import shutil
 from agent.collector import SPOOL_DIR, INBOX_DIR, SpoolRecord
 import xml.etree.ElementTree as et
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 import json
 from db.db import db_connect
+from ui.log_queue import post_log
+from abc import ABC, abstractmethod
 
 #Parser takes files from inbox and moves them to processing.
 #If the parser crashes, files that were not finished parsing stay in
@@ -24,10 +26,18 @@ BAD_DIR: str = os.path.join(SPOOL_DIR, "bad")
 NAMESPACE: dict[str, str] = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
 
 @dataclass
-class ProcessCreate:
+class SysmonEvent(ABC):
     channel: Optional[str]
+    event_id: int
     event_record_id: int
     time_retrieved: Optional[str]
+
+    @abstractmethod
+    def to_log(self) -> str:
+        ...
+
+@dataclass
+class ProcessCreate(SysmonEvent):
     process_id: Optional[int]
     parent_process_id: Optional[int]
     image: Optional[str]
@@ -50,10 +60,7 @@ class ProcessCreate:
                 f"  Hashes:                 {self.hashes}")
 
 @dataclass
-class NetworkConnect:
-    channel: Optional[str]
-    event_record_id: int
-    time_retrieved: Optional[str]
+class NetworkConnect(SysmonEvent):
     process_id: Optional[int]
     image: Optional[str]
     process_user: Optional[str]
@@ -73,6 +80,11 @@ class NetworkConnect:
                f"Destination Hostname:  {self.destination_hostname}\n"
                f"Protocol:              {self.protocol}\n"
                f"Initiated:             {self.initiated}")
+
+@dataclass
+class EventRecords:
+    process_create: list[ProcessCreate] = field(default_factory = list)
+    network_connect: list[NetworkConnect] = field(default_factory = list)
 
 def ensure_dirs():
     os.makedirs(DONE_DIR, exist_ok = True)
@@ -134,7 +146,7 @@ def get_records_from_spool(path: str) -> list[SpoolRecord]:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError as e:
-                print(f"[Parser] [Error] Line {line_no}: JSON Decode error: {e}")
+                post_log(f"[Parser] [Error] Line {line_no}: JSON Decode error: {e}")
                 continue
 
             records.append(SpoolRecord(
@@ -156,9 +168,8 @@ def get_event_data(root, names: list[str]) -> dict[str, Optional[str]]:
             result[name] = data.text
     return result
 
-def xml_to_event_records(records: list[SpoolRecord]) -> tuple[list[ProcessCreate], list[NetworkConnect]]:
-    process_records: list[ProcessCreate] = []
-    network_records: list[NetworkConnect] = []
+def xml_to_event_records(records: list[SpoolRecord]) -> EventRecords:
+    event_records = EventRecords()
 
     for record in records:
         try:
@@ -167,20 +178,20 @@ def xml_to_event_records(records: list[SpoolRecord]) -> tuple[list[ProcessCreate
                 if parsed_process_create_record is None:
                     continue
                 
-                process_records.append(parsed_process_create_record)
+                event_records.process_create.append(parsed_process_create_record)
 
             elif record.event_id == 3:
                 parsed_network_connect_record: NetworkConnect | None = parse_network_connect(record)
                 if parsed_network_connect_record is None:
                     continue
 
-                network_records.append(parsed_network_connect_record)
+                event_records.network_connect.append(parsed_network_connect_record)
 
         except Exception as e:
-            print(f"[Parser] [Error] Unable to parse XML: {e}")
+            post_log(f"[Parser] [Error] Unable to parse XML: {e}")
             continue
 
-    return process_records, network_records
+    return event_records
 
 def parse_process_create(record: SpoolRecord) -> ProcessCreate | None:
     root = et.fromstring(record.xml) 
@@ -188,11 +199,12 @@ def parse_process_create(record: SpoolRecord) -> ProcessCreate | None:
     #pre parsed fields
     if record.event_record_id is None:
         #TODO log files that did not have event_record_id instead of skipping
-        print(f"[Parser] [Error] Skipping record with missing event_record_id")
+        post_log(f"[Parser] [Error] Skipping record with missing event_record_id")
         return None
 
     event_record_id: int = record.event_record_id
     channel: str = record.channel
+    event_id: int = record.event_id
 
     time_created = root.find('e:System/e:TimeCreated', namespaces = NAMESPACE)
     timestamp = time_created.get('SystemTime') if time_created is not None else None
@@ -218,6 +230,7 @@ def parse_process_create(record: SpoolRecord) -> ProcessCreate | None:
 
     process_record: ProcessCreate = ProcessCreate(
                      channel = channel,
+                     event_id = event_id,
                      event_record_id = event_record_id,
                      time_retrieved = timestamp,
                      process_id = process_id,
@@ -240,11 +253,12 @@ def parse_network_connect(record: SpoolRecord) -> NetworkConnect | None:
     #pre parsed fields
     if record.event_record_id is None:
         #TODO log files that did not have event_record_id instead of skipping
-        print(f"[Parser] [Error] Skipping record with missing event_record_id")
+        post_log(f"[Parser] [Error] Skipping record with missing event_record_id")
         return None
 
     event_record_id: int = record.event_record_id
     channel: str = record.channel
+    event_id: int = record.event_id
 
     time_created = root.find('e:System/e:TimeCreated', namespaces = NAMESPACE)
     timestamp = time_created.get('SystemTime') if time_created is not None else None
@@ -265,6 +279,7 @@ def parse_network_connect(record: SpoolRecord) -> NetworkConnect | None:
     destination_port = ed['DestinationPort']
 
     network_record = NetworkConnect(channel = channel,
+                                    event_id = event_id,
                                     event_record_id = event_record_id,
                                     time_retrieved = timestamp,
                                     process_id = process_id,
@@ -283,72 +298,76 @@ def move_inbox_files_to_processing(inbox_files: list[str], src_dir: str, dst_dir
     for file in inbox_files:
         try:
             processing_path: str = move_file(src_dir, dst_dir, file)
-            print(f"[Parser] Processing {processing_path}")
+            post_log(f"[Parser] Moved {file} to processing {processing_path}")
         except Exception as e:
-            print(f"[Parser] [Error] Could not move {file} to processing, will retry next run: {e}")
+            post_log(f"[Parser] [Error] Could not move {file} to processing, will retry next run: {e}")
 
-def parse_processing_files(conn: sqlite3.Connection, processing_files: list[str]) -> tuple[list[ProcessCreate], list[NetworkConnect]]:
-    process_records: list[ProcessCreate] = []
-    network_records: list[NetworkConnect] = []
+def parse_processing_files(conn: sqlite3.Connection, processing_files: list[str]) -> EventRecords:
+    all_records = EventRecords()
 
-    print(f"[Parser] Parsing files...")
+    post_log(f"[Parser] Parsing files...")
 
     for file in processing_files:
         filepath: str = os.path.join(PROCESSING_DIR, file)
         try:
             spool_records: list[SpoolRecord] = get_records_from_spool(filepath)
-            file_process_records, file_network_records = xml_to_event_records(spool_records)
+            post_log(f"[Parser] Processing {file} ({len(spool_records)}) records")
+            event_records: EventRecords = xml_to_event_records(spool_records)
 
-            if not file_process_records and not file_network_records:
+            if not event_records.process_create and not event_records.network_connect:
                 #TODO fixing issue in xml_to_event_record will make this check simpler
-                print(f"[Parser] [Error] No valid events parsed from {file}, records may have had missing event_record_id")
+                post_log(f"[Parser] [Error] No valid events parsed from {file}, records may have had missing event_record_id")
                 try:
                     bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
-                    print(f"[Parser] [Error] Moved {file} to {bad_path}")
+                    post_log(f"[Parser] [Error] Moved {file} to {bad_path}")
                 except Exception as e:
-                    print(f"[Parser] [Error] Also failed to move {file} to bad path: {e}")
+                    post_log(f"[Parser] [Error] Also failed to move {file} to bad path: {e}")
                 continue
 
         except Exception as e:
-            print(f"[Parser] [Error] Failed to parse: {file}: {e}")
-            bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
-            print(f"[Parser] [Error] Moved {file} to {bad_path}")
+            post_log(f"[Parser] [Error] Failed to parse: {file}: {e}")
+            try:
+                bad_path: str = move_file(PROCESSING_DIR, BAD_DIR, file)
+                post_log(f"[Parser] [Error] Moved {file} to {bad_path}")
+            except Exception as move_err:
+                post_log(f"[Parser] [Error] Also failed to move {file} to bad: {move_err}")
             continue
 
         try:
-            if file_process_records:
-                insert_process(conn, file_process_records)
+            if event_records.process_create:
+                insert_process(conn, event_records.process_create) 
 
-            if file_network_records:
-                insert_network(conn, file_network_records)
+            if event_records.network_connect:
+                insert_network(conn, event_records.network_connect)
 
             move_file(PROCESSING_DIR, DONE_DIR, file)
-            process_records.extend(file_process_records)
-            network_records.extend(file_network_records)
+            all_records.process_create.extend(event_records.process_create)
+            all_records.network_connect.extend(event_records.network_connect)
+
         except Exception as e:
-            print(f"[Parser] [Error] Failed to insert {file} into database: {e}")
+            post_log(f"[Parser] [Error] Failed to insert {file} into database: {e}")
             move_file(PROCESSING_DIR, BAD_DIR, file)
 
-    return process_records, network_records
+    return all_records
 
-def run_parser() -> tuple[list[ProcessCreate], list[NetworkConnect]] | None:
-    print("[Parser] Starting up")
+def run_parser() -> EventRecords | None:
+    post_log("[Parser] Starting up")
 
     conn: sqlite3.Connection | None = None
 
     try:
         conn = db_connect()
-        print("[Parser] Connection to database established")
+        post_log("[Parser] Connection to database established")
     except sqlite3.Error as e:
-        print(f"[Parser] Failed to connect to database: {e}")
+        post_log(f"[Parser] Failed to connect to database: {e}")
         return None
 
     try:
-        print("[Parser] Ensuring dirs")
+        post_log("[Parser] Ensuring dirs")
         ensure_dirs()
 
         inbox_files: list[str] = list_inbox_jsonl()
-        print(f"[Parser] Moving {len(inbox_files)} files from inbox directory to processing directory")
+        post_log(f"[Parser] Moving {len(inbox_files)} files from inbox directory to processing directory")
         move_inbox_files_to_processing(inbox_files, INBOX_DIR, PROCESSING_DIR)
 
         processing_files: list[str] = sorted(f for f in os.listdir(PROCESSING_DIR) if f.endswith(".jsonl"))
@@ -357,7 +376,7 @@ def run_parser() -> tuple[list[ProcessCreate], list[NetworkConnect]] | None:
 
         return event_records
     except Exception as e:
-        print(f"[Parser] [Error] Unexpected error: {e}")
+        post_log(f"[Parser] [Error] Unexpected error: {e}")
         return None
     finally:
         if conn:

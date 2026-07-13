@@ -1,4 +1,3 @@
-import win32evtlog
 import os
 from datetime import datetime, timezone
 import json
@@ -6,6 +5,7 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 import sqlite3
 from db.db import db_connect
+from ui.log_queue import post_log
 
 SYSMON_LOG: str = "Microsoft-Windows-Sysmon/Operational"
 COLLECTOR_DIR: str = os.path.dirname(os.path.abspath(__file__)) 
@@ -102,7 +102,7 @@ def state_get(key: str, default: str, conn: sqlite3.Connection) -> str:
     else:
         return default
 
-def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_events: int = 1000) -> tuple[list[SpoolRecord], int, int]:
+def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, win32evtlog, max_events: int = 1000) -> tuple[list[SpoolRecord], int, int, int]:
     last_stored_event_record_id = int(state_get(EVENT_RECORD_ID_STATE+f"_{event_id}", "0", conn))
     query: str = build_query(event_id, last_stored_event_record_id)
     handle_query = win32evtlog.EvtQuery(SYSMON_LOG, win32evtlog.EvtQueryForwardDirection, query)
@@ -122,56 +122,78 @@ def collect_new_sysmon_events(event_id: int, conn: sqlite3.Connection, max_event
             if rec.event_record_id is not None:
                 max_event_record_id = max(max_event_record_id, rec.event_record_id)
             records.append(rec)
+
     finally:
         # Always close the query handle even if an exception occurs mid loop to avoid leaking windows event log handles
         # ignoring because pyright cannot see PyEVT_HANDLE's methods
-        print("[Collector] Closing query handle")
+        post_log("[Collector] Closing query handle")
         handle_query.Close() #type: ignore
 
-    return records, max_event_record_id, last_stored_event_record_id
+    none_id_count: int = 0
+    for r in records:
+        if r.event_record_id is None:
+            none_id_count += 1
+    if none_id_count > 0:
+        post_log(f"[Collector] [Warning] {none_id_count}/{len(records)} records had no extractable EventRecordID")
 
-def run_collector():
-    print("[Collector] Starting up")
-    print("[Collector] Ensuring directories exist...")
+    return records, max_event_record_id, last_stored_event_record_id, none_id_count
+
+def run_collector() -> bool:
+    try:
+        import win32evtlog
+    except ImportError:
+        post_log("[Collector] [Error] win32evtlog is not available. Is pywin32 installed?")
+        return False
+
+    post_log("[Collector] Starting up")
+    post_log("[Collector] Ensuring directories exist...")
     ensure_dirs()
 
     conn: sqlite3.Connection | None = None
 
     try:
         conn = db_connect()
-        print("[Collector] Connection to database established")
+        post_log("[Collector] Connection to database established")
     except Exception as e:
-        print("[Collector] [Error] Unable to connect to database")
-        return
+        post_log("[Collector] [Error] Unable to connect to database")
+        return False
 
-    print("[Collector] Getting events...")
+    post_log("[Collector] Getting events...")
 
     try:
         for event_id in EVENT_IDS:
-            records, max_event_record_id, last_stored_event_record_id = collect_new_sysmon_events(event_id, conn)
+            records, max_event_record_id, last_stored_event_record_id, none_id_count = collect_new_sysmon_events(event_id, conn, win32evtlog)
             if not records:
-                print(f"[Collector] No events found for event ID {event_id} since last_record_id = {last_stored_event_record_id}")
+                post_log(f"[Collector] No events found for event ID {event_id} since last_record_id = {last_stored_event_record_id}")
                 continue 
 
-            print(f"[Collector] Retrieved {len(records)} events!")
-            print("[Collector] Generating filename...")
+            post_log(f"[Collector] Retrieved {len(records)} events!")
+            post_log("[Collector] Generating filename...")
             filename: str = generate_jsonl_filename(event_id)
 
             inbox_file_path: str = os.path.join(INBOX_DIR, filename)
 
             if max_event_record_id > last_stored_event_record_id:
                 try:
-                    print(f"[Collector] Wrote to {inbox_file_path}")
+                    post_log(f"[Collector] Wrote to {inbox_file_path}")
                     atomic_write_jsonl(inbox_file_path, records)
                     state_set(EVENT_RECORD_ID_STATE+f"_{event_id}", str(max_event_record_id), conn)
+                    post_log(f"[Collector] Checkpoint: {last_stored_event_record_id} -> {max_event_record_id}")
                 except Exception as e:
-                    print(f"[Collector] [Error] {e}")
-
-            print(f"[Collector] Checkpoint: {last_stored_event_record_id} -> {max_event_record_id}")
+                    post_log(f"[Collector] [Error] {e}")
+                    return False
+            elif none_id_count == len(records):
+                post_log(f"[Collector] [Error] Collected {len(records)} events for EventID {event_id} but could not extract any EventRecordID. Checkpoint stuck at {last_stored_event_record_id}. Skipping batch.")
 
     except Exception as e:
-        print(f"[Collector] [Error] {e}")
-        print("[Collector] [Error] If this error is 'Access Denied', run as administrator")
+        if "Access is denied" in str(e):
+            post_log("[Collector] [Error] Access is denied! Run miniEDR as administrator")
+            return False
+        else:
+            post_log(f"[Collector] [Error] {e}")
+            return False
     finally:
         if conn:
             conn.close()
+
+    return True
