@@ -90,7 +90,7 @@ Alerts are written to two places:
 ----------------------------------------
 
 Rule name: powershell_encoded_command | Severity: medium | MITRE: T1059.001
-Message: Powershell launched with an encoded command. Possible obfuscation or defence evasion. Command: "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -enc <base64>
+Message: Powershell launched with an encoded command. Possible obfuscation or defence evasion.
 Event:
   User:                   Computer/User
   Parent Image:           C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
