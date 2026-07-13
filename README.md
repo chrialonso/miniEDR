@@ -1,11 +1,37 @@
+## miniEDR
+A lightweight, terminal based Endpoint Detection & Response agent for Windows, built on top of Sysmon. It collects Sysmon events, parses them into a local SQLite database, runs detection rules mapped to MITRE ATT&CK, and displays everything through a live terminal dashboard.
+
+![Dashboard pane](docs/images/dashboard.png)
+
 ## Requirements
  
 - Windows (Sysmon must be installed and running)
 - Python 3.11+
 - Administrator privileges (required to read the Sysmon event log)
-- `pywin32` (`pip install pywin32`)
+- Dependencies:
 
+```
+ pip install textual rich psutil pywin32
+```
 
+## Running
+Run as administrator:
+```
+python main.py
+```
+This launches a terminal user interface.
+All pipeline components start disabled until enabled in the Components pane or by pressing `x` to toggle all of them at once.
+Quit with `q`. The agent thread is given a few seconds to shut down cleanly before the program exits.
+
+## Interface
+miniEDR runs as a [Textual](https://textual.textualize.io/) terminal UI with four panes navigable from the sidebar:
+
+| Pane | Contents |
+|---|---|
+|**Dashboard**| Live system & agent resource usage (CPU/RAM with sparkline history), free disk space, database size, top CPU/RAM processes, component uptime, events processed this run, time until next vacuum, and an alert summary by severity|
+|**Alerts**| A table of fired alerts (ID, Rule, Severity, MITRE, Timestamp) with a detail pane showing the full parsed event and the paths of the alert log files |
+|**Logs**| A live scrolling feed of the agent's internal operational log (All Component's status and errors)|
+|**Components**| Shows the enabled/disabled status of each pipeline component with a description, lets you toggle them individually|
 ## How It Works
 The agent runs in a continuous loop (every 15 seconds) and moves events through a pipeline: 
 ```
@@ -24,14 +50,15 @@ Sysmon Event Log
   Maintenance      Runs every 24 hours to purge old records from the
                    database and clean up old spool files
 ```
+Each component can be enabled or disabled independently from the **Components** pane.
 ## Spool Directories
  
 | Directory | Purpose |
 |---|---|
 | `agent/spool/inbox/` | New files written by the collector, waiting to be parsed |
 | `agent/spool/processing/` | Files actively being parsed (allows crash recovery) |
-| `agent/spool/done/` | Successfully parsed files, kept for forensic review |
-| `agent/spool/bad/` | Files that failed to parse, kept for troubleshooting |
+| `agent/spool/done/` | Successfully parsed files, kept for forensic review (purged after 7 days)|
+| `agent/spool/bad/` | Files that failed to parse, kept for troubleshooting (purged after 30 days)|
 
 # Detection Rules
 ### Process Events (Sysmon Event ID 1)
@@ -87,13 +114,3 @@ Events and alerts are stored in a SQLite database at `db/edr.db`.
 | `state` | Collector checkpoints (last seen Event Record ID per event type) |
  
 The schema is initialised automatically on first run. Records older than 30 days are purged during daily maintenance.
- 
-## Running
- 
-Run as administrator:
- 
-```
-python main.py
-```
- 
-Stop with `Ctrl+C`. The program will finish its current loop iteration before shutting down.
