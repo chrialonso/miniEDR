@@ -46,6 +46,9 @@ class Alert:
     def event_to_json(self) -> str:
         return json.dumps(asdict(self.event_record), ensure_ascii = False)
 
+class ProcessCreateRules(Enum):
+    CRYPTO_MINING = "proc_create_susp_crypto_mining"
+
 class PowershellRules(Enum):
     ENCODED_COMMAND = "powershell_encoded_command"
     DEFENDER_EXCLUSION = "powershell_defender_exclusion"
@@ -57,7 +60,12 @@ class NetworkRules(Enum):
     NGROK_DOMAIN_CONNECTION = "network_ngrok_domain_connection"
     NGROK_TUNNEL_COMM = "network_ngrok_tunnel_communication"
 
-# --- Sysmon EventID 1 Detection Rules ---
+class OfficeRules(Enum):
+    OFFICE_SUS_CHILD_PROCESSES = "office_sus_child_process"
+
+# === Sysmon EventID 1 Process Creation Rules ===
+
+    # --- Start of Powershell rules ---
 
 def powershell_encoding(record: "ProcessCreate") -> Optional[Alert]:
     # ATT&CK: T1059.001
@@ -80,7 +88,7 @@ def powershell_encoding(record: "ProcessCreate") -> Optional[Alert]:
         return None
 
     #filter_azure: exclude Azure Guest configuration
-    azure_paths = {r'c:\packages\plugins\microsoft.guestconfiguration.configurationforwindows',
+    azure_paths: set[str] = {r'c:\packages\plugins\microsoft.guestconfiguration.configurationforwindows',
                    r'gc_worker.exe'}
 
     if record.parent_image:
@@ -89,7 +97,7 @@ def powershell_encoding(record: "ProcessCreate") -> Optional[Alert]:
             if path in parent:
                 return None
 
-    encoded_flags = {' -e ', ' -en ', ' -enc ', ' -enco', ' -ec '}
+    encoded_flags: set[str] = {' -e ', ' -en ', ' -enc ', ' -enco', ' -ec '}
 
     #selection: check for encoded flags
     for flag in encoded_flags:
@@ -112,13 +120,13 @@ def powershell_defender_exclusion(record: "ProcessCreate") -> Optional[Alert]:
 
     cli = record.command_line.lower()
 
-    preferences = {'add-mppreference', 'set-mppreference'}
+    preferences: set[str] = {'add-mppreference', 'set-mppreference'}
     selection1 = False
     for pref in preferences:
         if pref in cli:
             selection1 = True
 
-    exclusion_paths = {'-exclusionpath', '-exclusionextension', '-exclusionprocess', '-exclusionipaddress'}
+    exclusion_paths: set[str] = {'-exclusionpath', '-exclusionextension', '-exclusionprocess', '-exclusionipaddress'}
     selection2 = False
     for path in exclusion_paths:
         if path in cli:
@@ -169,7 +177,116 @@ def powershell_disable_defender_av(record: "ProcessCreate") -> Optional[Alert]:
     
     return None
 
-# --- Sysmon EventID 3 Network Connection Rules --- 
+    # --- Start of Office rules ---
+
+def office_sus_child_process(record: "ProcessCreate") -> Optional[Alert]:
+    # ATT&CK: T1047, T1204.002, T1218.010
+    # Sigma: Suspicious Microsoft Office Child Process
+
+    if not record.parent_image:
+        return None
+
+    parent_image_endswith: tuple[str, ...] = ("\\eqnedt32.exe", "\\excel.exe", "\\msaccess.exe", "\\mspub.exe", "\\onenote.exe", "\\powerpnt.exe",
+                           "\\visio.exe", "\\winword.exe", "\\wordpad.exe", "\\wordview.exe")
+    parent_image = record.parent_image.lower()
+
+    selection_parent: bool = parent_image.endswith(parent_image_endswith)
+
+    # return here if selection_parent is false
+    if not selection_parent:
+        return None
+
+    if record.original_file_name:
+        original_file_name = record.original_file_name.lower()
+    else:
+        original_file_name = ""
+
+    det_original_filename: set[str] = {"bitsadmin.exe", "certoc.exe", "certutil.exe", "cmd.exe", "cmstp.exe", "cscript.exe", "curl.exe",
+               "hh.exe", "ieexec.exe", "installutil.exe", "javaw.exe", "microsoft.workflow.compiler.exe", "msdt.exe", "mshta.exe",
+               "msiexec.exe", "msxsl.exe", "odbcconf.exe", "pcalua.exe", "powershell.exe","regasm.exe","regsvcs.exe", "regsvr32.exe",
+               "rundll32.exe", "schtasks.exe", "scriptrunner.exe", "wmic.exe",
+               "workfolders.exe", "wscript.exe"}
+
+    selection_child_process_1: bool = original_file_name in det_original_filename
+
+    if record.image:
+        image = record.image.lower()
+    else:
+        image = ""
+
+    image_endswith: tuple[str, ...] = ("\\appvlp.exe", "\\bash.exe", "\\bitsadmin.exe", "\\certoc.exe", "\\certutil.exe",
+              "\\cmd.exe", "\\cmstp.exe", "\\control.exe", "\\cscript.exe", "\\curl.exe", "\\forfiles.exe", "\\hh.exe", "\\ieexec.exe", "\\installutil.exe",
+              "\\javaw.exe", "\\mftrace.exe", "\\microsoft.workflow.compiler.exe", "\\msbuild.exe", "\\msdt.exe", "\\mshta.exe", "\\msidb.exe", "\\msiexec.exe",
+              "\\msxsl.exe", "\\odbcconf.exe", "\\pcalua.exe", "\\powershell.exe", "\\pwsh.exe", "\\regasm.exe", "\\regsvcs.exe", "\\regsvr32.exe", "\\rundll32.exe",
+              "\\schtasks.exe", "\\scrcons.exe", "\\scriptrunner.exe", "\\sh.exe", "\\svchost.exe", "\\verclsid.exe", "\\wmic.exe", "\\workfolders.exe", "\\wscript.exe")
+
+    selection_child_process_2: bool = image.endswith(image_endswith)
+
+    child_susp_paths: set[str] = {"\\appdata\\", "\\users\\public\\", "\\programdata\\",
+                                  "\\windows\\tasks\\", "\\windows\\temp\\", "\\windows\\system32\\tasks\\"}
+
+    selection_child_susp_paths = False
+    for susp_paths in child_susp_paths:
+        if susp_paths in image:
+            selection_child_susp_paths = True
+            break
+
+    # selection_parent is guaranteed to be true by this point, don't need to check for it again
+    if selection_child_process_1 or selection_child_process_2 or selection_child_susp_paths:
+        return Alert(
+                rule_name = OfficeRules.OFFICE_SUS_CHILD_PROCESSES.value,
+                severity = Severity.HIGH,
+                mitre = "T1047, T1204.002, T1218.010",
+                message = "A suspicious process spawned from one of the Microsoft Office suite products.",
+                event_record = record)
+
+def crypto_mining_activity(record: "ProcessCreate") -> Optional[Alert]:
+    # ATT&CK: T1496
+    # Sigma: Potential Crypto Mining Activity
+
+    if not record.command_line:
+        return None
+
+    selection_command_line: set[str] = {" --cpu-priority=", "--donate-level=0", " -o pool.", " --nicehash", " --algo=rx/0 ", "stratum+tcp://",
+                                  "stratum+udp://",
+                                  # base64 encoded: --donate-level=
+                                  "ls1kb25hdgutbgv2zww9",
+                                  "0tzg9uyxrllwxldmvsp",
+                                  "tlwrvbmf0zs1szxzlbd",
+                                  # base64 encoded: stratum+tcp:// and stratum+udp://
+                                  "c3ryyxr1bst0y3a6ly",
+                                  "n0cmf0dw0rdgnwoi8v",
+                                  "zdhjhdhvtk3rjcdovl",
+                                  "c3ryyxr1bst1zha6ly",
+                                  "n0cmf0dw0rdwrwoi8v",
+                                  "zdhjhdhvtk3vkcdovl"}
+
+    filter_command_line: set[str] ={" pool.c ", " pool.o ", "gcc -"}
+
+    command_line = record.command_line.lower()
+
+    selection = False
+    for s in selection_command_line:
+        if s in command_line:
+            selection = True
+            break
+
+    filtered = False
+    for f in filter_command_line:
+        if f in command_line:
+            filtered = True
+            break
+
+    if selection and not filtered:
+        return Alert(rule_name = ProcessCreateRules.CRYPTO_MINING.value,
+                     severity = Severity.HIGH,
+                     mitre = "T1496",
+                     message = "Command line parameters or strings used by crypto miners detected.",
+                     event_record = record)
+
+# === Sysmon EventID 3 Network Connection Rules === 
+
+    # --- Start of network rules ---
 
 def network_notepad_connection(record: "NetworkConnect") -> Optional[Alert]:
     # ATT&CK: T1055
