@@ -47,6 +47,7 @@ fr-qrl.miningocean.org
 fr-upx.miningocean.org
 fr-zephyr.miningocean.org
 fr.minexmr.com
+gandalph3000.com
 hellominer.com
 herominers.com
 hk-aipg.miningocean.org
@@ -111,7 +112,7 @@ nanopool.org
 nbminer.com
 node3.luckpool.net
 noobxmr.com
-pangolinminer.comgandalph3000.com
+pangolinminer.com
 pool.4i7i.com
 pool.armornetwork.org
 pool.cortins.tk
