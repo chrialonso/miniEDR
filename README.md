@@ -8,11 +8,26 @@ A lightweight, terminal based Endpoint Detection & Response agent for Windows, b
 - Windows (Sysmon must be installed and running)
 - Python 3.11+
 - Administrator privileges (required to read the Sysmon event log)
-- Dependencies:
+### Dependencies:
 
 ```
  pip install textual rich psutil pywin32
 ```
+### Installing Sysmon
+
+1. Download Sysmon from [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon) and extract it (`C:\Tools\Sysmon`).
+2. Download [SwiftOnSecurity's sysmonconfig-export.xml](https://github.com/SwiftOnSecurity/sysmon-config), and place it in the same folder.
+3. Run Command Prompt or PowerShell as administrator.
+4. Install Sysmon
+
+```
+cd C:\Tools\Sysmon
+sysmon64.exe -accepteula
+sysmon64.exe -i
+sysmon64.exe -i sysmonconfig-export.xml
+```
+
+Use "sysmon.exe" instead of "sysmon64.exe" on 32-bit systems.
 
 ## Running
 Run as administrator:
